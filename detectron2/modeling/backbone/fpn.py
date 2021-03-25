@@ -7,11 +7,16 @@ from torch import nn
 
 from detectron2.layers import Conv2d, ShapeSpec, get_norm
 
+from robustness import model_utils, datasets
+from torchvision.models._utils import IntermediateLayerGetter
+from detectron2.layers import FrozenBatchNorm2d
+
 from .backbone import Backbone
 from .build import BACKBONE_REGISTRY
 from .resnet import build_resnet_backbone
 
-__all__ = ["build_resnet_fpn_backbone", "build_retinanet_resnet_fpn_backbone", "FPN"]
+
+__all__ = ["build_resnet_fpn_backbone", "build_retinanet_resnet_fpn_backbone", "FPN", "build_retinanet_resnet_fpn_backbone", "CustomResnet50FPN"]
 
 
 class FPN(Backbone):
@@ -253,3 +258,117 @@ def build_retinanet_resnet_fpn_backbone(cfg, input_shape: ShapeSpec):
         fuse_type=cfg.MODEL.FPN.FUSE_TYPE,
     )
     return backbone
+
+
+@BACKBONE_REGISTRY.register()
+def build_custom_resnet50_fpn_backbone(cfg, input_shape: ShapeSpec):
+    """
+    Args:
+        cfg: a detectron2 CfgNode
+
+    Returns:
+        backbone (Backbone): backbone module, must be a subclass of :class:`Backbone`.
+    """
+    """
+    in detectron2 by default:
+    1. resnet base and layer1(res2) requires_grad = False
+    2. all the bn in resnet converted to Frozen bn
+    """
+    # bottom_up = build_resnet_backbone(cfg, input_shape)
+    # in_channels_p6p7 = bottom_up.output_shape()["res5"].channels
+
+    assert "ROBUST_PATH" in cfg.MODEL.BACKBONE.keys(), "Define where to find the robust network path"
+    
+    return_layers = {"layer2": "res3", "layer3": "res4", "layer4": "res5"}
+
+    model, _ = model_utils.make_and_restore_model(arch="resnet50", dataset=datasets.ImageNet(""),
+                                                  resume_path=cfg.MODEL.BACKBONE.ROBUST_PATH,
+                                                  pytorch_pretrained=False)
+    
+    resnet = model.model
+    
+    frozen_range = [resnet.conv1, resnet.layer1]
+    for module in frozen_range:
+        for param in module.parameters():
+            param.requires_grad = False
+    resnet = FrozenBatchNorm2d.convert_frozen_batchnorm(resnet)
+
+    bottom_up = IntermediateLayerGetter(resnet, return_layers)
+
+    in_features = cfg.MODEL.FPN.IN_FEATURES
+    out_channels = cfg.MODEL.FPN.OUT_CHANNELS
+
+    backbone = CustomResnet50FPN(
+        bottom_up=bottom_up,
+        in_features=in_features,
+        out_channels=out_channels,
+        return_layers=return_layers,
+        norm=cfg.MODEL.FPN.NORM,
+        top_block=LastLevelMaxPool(),
+        fuse_type=cfg.MODEL.FPN.FUSE_TYPE,
+    )
+    return backbone
+
+
+class CustomResnet50FPN(FPN):
+    """
+    This module implements Feature Pyramid Network.
+    It creates pyramid features built on top of some input feature maps.
+    """
+    def __init__(
+        self, bottom_up, in_features, out_channels, return_layers, norm="", top_block=None, fuse_type="sum"
+    ):
+        super(FPN, self).__init__()
+
+        in_strides = [8, 16, 32]
+        in_channels = [512, 1024, 2048]  # for resnet50
+        # in_channels = [bottom_up[key][-1].conv3.out_channels for key in return_layers]
+
+        _assert_strides_are_log2_contiguous(in_strides)
+        lateral_convs = []
+        output_convs = []
+
+        use_bias = norm == ""
+        for idx, in_channels in enumerate(in_channels):
+            lateral_norm = get_norm(norm, out_channels)
+            output_norm = get_norm(norm, out_channels)
+
+            lateral_conv = Conv2d(
+                in_channels, out_channels, kernel_size=1, bias=use_bias, norm=lateral_norm
+            )
+            output_conv = Conv2d(
+                out_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=use_bias,
+                norm=output_norm,
+            )
+            weight_init.c2_xavier_fill(lateral_conv)
+            weight_init.c2_xavier_fill(output_conv)
+            stage = int(math.log2(in_strides[idx]))
+            self.add_module("fpn_lateral{}".format(stage), lateral_conv)
+            self.add_module("fpn_output{}".format(stage), output_conv)
+
+            lateral_convs.append(lateral_conv)
+            output_convs.append(output_conv)
+        # Place convs into top-down order (from low to high resolution)
+        # to make the top-down computation in forward clearer.
+        self.lateral_convs = lateral_convs[::-1]
+        self.output_convs = output_convs[::-1]
+        self.top_block = top_block
+        self.in_features = in_features
+        self.bottom_up = bottom_up # resnet
+        # Return feature names are "p<stage>", like ["p2", "p3", ..., "p6"]
+        self._out_feature_strides = {"p{}".format(int(math.log2(s))): s for s in in_strides}
+        # top block output feature maps.
+        if self.top_block is not None:
+            for s in range(stage, stage + self.top_block.num_levels):
+                self._out_feature_strides["p{}".format(s + 1)] = 2 ** (s + 1)
+
+        self._out_features = list(self._out_feature_strides.keys())
+        self._out_feature_channels = {k: out_channels for k in self._out_features}
+        self._size_divisibility = in_strides[-1]
+        assert fuse_type in {"avg", "sum"}
+        self._fuse_type = fuse_type
