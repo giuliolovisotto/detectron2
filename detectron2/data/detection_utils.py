@@ -70,14 +70,13 @@ def convert_PIL_to_numpy(image, format):
     if format is not None:
         # PIL only supports RGB, so convert to RGB and flip channels over below
         conversion_format = format
-        if format in ["BGR", "YUV-BT.601"]:
+        if format in ["BGR", "YUV-BT.601", "RGB-robust"]:
             conversion_format = "RGB"
         image = image.convert(conversion_format)
     image = np.asarray(image)
     # PIL squeezes out the channel dimension for "L", so make it HWC
     if format == "L":
         image = np.expand_dims(image, -1)
-
     # handle formats not supported by PIL
     elif format == "BGR":
         # flip channels if needed
@@ -85,7 +84,10 @@ def convert_PIL_to_numpy(image, format):
     elif format == "YUV-BT.601":
         image = image / 255.0
         image = np.dot(image, np.array(_M_RGB2YUV).T)
-
+    elif format == "RGB-robust":
+        image = image / 255.0
+        image = image.astype(np.float32)
+        
     return image
 
 

@@ -5,18 +5,16 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from detectron2.layers import Conv2d, ShapeSpec, get_norm
-
 from robustness import model_utils, datasets
 from torchvision.models._utils import IntermediateLayerGetter
-from detectron2.layers import FrozenBatchNorm2d
+
+from detectron2.layers import Conv2d, ShapeSpec, get_norm, FrozenBatchNorm2d
 
 from .backbone import Backbone
 from .build import BACKBONE_REGISTRY
 from .resnet import build_resnet_backbone
 
-
-__all__ = ["build_resnet_fpn_backbone", "build_retinanet_resnet_fpn_backbone", "FPN", "build_retinanet_resnet_fpn_backbone", "CustomResnet50FPN"]
+__all__ = ["build_resnet_fpn_backbone", "build_retinanet_resnet_fpn_backbone", "FPN", "CustomResnet50FPN", "build_custom_resnet50_fpn_backbone"]
 
 
 class FPN(Backbone):
@@ -277,18 +275,25 @@ def build_custom_resnet50_fpn_backbone(cfg, input_shape: ShapeSpec):
     # bottom_up = build_resnet_backbone(cfg, input_shape)
     # in_channels_p6p7 = bottom_up.output_shape()["res5"].channels
 
-    assert "ROBUST_PATH" in cfg.MODEL.BACKBONE.keys(), "Define where to find the robust network path"
+    assert "WEIGHTS" in cfg.MODEL.keys(), "Define where to find the robust network path"
     
-    return_layers = {"layer2": "res3", "layer3": "res4", "layer4": "res5"}
+    return_layers = {"layer1": "res2", "layer2": "res3", "layer3": "res4", "layer4": "res5"}
 
     model, _ = model_utils.make_and_restore_model(arch="resnet50", dataset=datasets.ImageNet(""),
-                                                  resume_path=cfg.MODEL.BACKBONE.ROBUST_PATH,
+                                                  resume_path=cfg.MODEL.WEIGHTS,
                                                   pytorch_pretrained=False)
+    
+    cfg.MODEL.WEIGHTS = ""
     
     resnet = model.model
     
-    frozen_range = [resnet.conv1, resnet.layer1]
-    for module in frozen_range:
+    freeze_level = cfg.MODEL.BACKBONE.FREEZE_AT
+    
+    to_freeze_layers = [resnet.conv1, resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4]
+    
+    # frozen_range = [resnet.conv1, resnet.layer1]
+    # always freeze conv1 
+    for module in to_freeze_layers[:freeze_level]:
         for param in module.parameters():
             param.requires_grad = False
     resnet = FrozenBatchNorm2d.convert_frozen_batchnorm(resnet)
@@ -307,6 +312,7 @@ def build_custom_resnet50_fpn_backbone(cfg, input_shape: ShapeSpec):
         top_block=LastLevelMaxPool(),
         fuse_type=cfg.MODEL.FPN.FUSE_TYPE,
     )
+    backbone.__bottom_up=bottom_up
     return backbone
 
 
@@ -320,9 +326,8 @@ class CustomResnet50FPN(FPN):
     ):
         super(FPN, self).__init__()
 
-        in_strides = [8, 16, 32]
-        in_channels = [512, 1024, 2048]  # for resnet50
-        # in_channels = [bottom_up[key][-1].conv3.out_channels for key in return_layers]
+        in_strides = [4, 8, 16, 32]
+        in_channels = [bottom_up[key][-1].conv3.out_channels for key in return_layers]
 
         _assert_strides_are_log2_contiguous(in_strides)
         lateral_convs = []
