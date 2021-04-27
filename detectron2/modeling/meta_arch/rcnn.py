@@ -212,6 +212,9 @@ class GeneralizedRCNN(nn.Module):
             results, _ = self.roi_heads(images, features, proposals, None)
         else:
             detected_instances = [x.to(self.device) for x in detected_instances]
+            for x in detected_instances:
+                x.proposal_boxes = x.pred_boxes
+            detected_instances = self.roi_heads._forward_box(features, detected_instances)
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
 
         if do_postprocess:
