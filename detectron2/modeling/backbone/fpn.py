@@ -283,8 +283,6 @@ def build_custom_resnet50_fpn_backbone(cfg, input_shape: ShapeSpec):
                                                   resume_path=cfg.MODEL.WEIGHTS,
                                                   pytorch_pretrained=False)
     
-    cfg.MODEL.WEIGHTS = ""
-    
     resnet = model.model
     
     freeze_level = cfg.MODEL.BACKBONE.FREEZE_AT
