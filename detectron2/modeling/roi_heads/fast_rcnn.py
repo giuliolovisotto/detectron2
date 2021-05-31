@@ -100,13 +100,13 @@ def _log_classification_stats(pred_logits, gt_classes, prefix="fast_rcnn"):
     bg_class_ind = pred_logits.shape[1] - 1
 
     fg_inds = (gt_classes >= 0) & (gt_classes < bg_class_ind)
-    num_fg = fg_inds.nonzero().numel()
+    num_fg = torch.nonzero(fg_inds).numel()
     fg_gt_classes = gt_classes[fg_inds]
     fg_pred_classes = pred_classes[fg_inds]
 
-    num_false_negative = (fg_pred_classes == bg_class_ind).nonzero().numel()
-    num_accurate = (pred_classes == gt_classes).nonzero().numel()
-    fg_num_accurate = (fg_pred_classes == fg_gt_classes).nonzero().numel()
+    num_false_negative = torch.nonzero(fg_pred_classes == bg_class_ind).numel()
+    num_accurate = torch.nonzero(pred_classes == gt_classes).numel()
+    fg_num_accurate = torch.nonzero(fg_pred_classes == fg_gt_classes).numel()
 
     storage = get_event_storage()
     storage.put_scalar(f"{prefix}/cls_accuracy", num_accurate / num_instances)
@@ -151,7 +151,7 @@ def fast_rcnn_inference_single_image(
     filter_mask = scores > score_thresh  # R x K
     # R' x 2. First column contains indices of the R predictions;
     # Second column contains indices of classes.
-    filter_inds = filter_mask.nonzero()
+    filter_inds = torch.nonzero(filter_mask)
     if num_bbox_reg_classes == 1:
         boxes = boxes[filter_inds[:, 0], 0]
     else:
