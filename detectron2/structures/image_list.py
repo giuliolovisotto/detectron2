@@ -117,8 +117,14 @@ class ImageList(object):
         else:
             # max_size can be a tensor in tracing mode, therefore convert to list
             batch_shape = [len(tensors)] + list(tensors[0].shape[:-2]) + list(max_size)
-            batched_imgs = tensors[0].new_full(batch_shape, pad_value)
-            for img, pad_img in zip(tensors, batched_imgs):
-                pad_img[..., : img.shape[-2], : img.shape[-1]].copy_(img)
-
+            # batched_imgs = tensors[0].new_full(batch_shape, pad_value)
+            # for img, pad_img in zip(tensors, batched_imgs):
+            #     pad_img[..., : img.shape[-2], : img.shape[-1]].copy_(img)
+            out_batch_imgs = []
+            for j, img in enumerate(tensors):
+                image_size = image_sizes[j]
+                padding_size = [0, max_size[-1] - image_size[1], 0, max_size[-2] - image_size[0]]
+                b_image = F.pad(tensors[j], padding_size, value=pad_value)
+                out_batch_imgs.append(b_image)
+            batched_imgs = torch.stack(out_batch_imgs)
         return ImageList(batched_imgs.contiguous(), image_sizes)
